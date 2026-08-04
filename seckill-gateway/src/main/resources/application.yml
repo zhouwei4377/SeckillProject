@@ -1,0 +1,63 @@
+spring:
+  application:
+    name: seckill-gateway
+  cloud:
+    nacos:
+      discovery:
+        server-addr: 127.0.0.1:8848
+        namespace: seckill
+      config:
+        server-addr: 127.0.0.1:8848
+        namespace: seckill
+    sentinel:
+      transport:
+        dashboard: 127.0.0.1:8080
+        port: 8719
+  redis:
+    host: 127.0.0.1
+    port: 6379
+    timeout: 2000
+    jedis:
+      pool:
+        max-active: 100
+        max-idle: 50
+        min-idle: 10
+        max-wait: -1ms
+
+server:
+  port: 8080
+  servlet:
+    context-path: /
+
+zuul:
+  prefix: /api
+  strip-prefix: true
+  routes:
+    product:
+      path: /product/**
+      service-id: seckill-product
+      strip-prefix: false
+    order:
+      path: /order/**
+      service-id: seckill-order
+      strip-prefix: false
+    payment:
+      path: /payment/**
+      service-id: seckill-payment
+      strip-prefix: false
+  semaphore:
+    max-semaphores: 300
+  thread-pool:
+    use-separate-thread-pools: true
+
+logging:
+  level:
+    root: INFO
+    com.seckill: DEBUG
+  pattern:
+    console: '%d{yyyy-MM-dd HH:mm:ss} [%thread] %-5level %logger{36} - %msg%n'
+    file: '%d{yyyy-MM-dd HH:mm:ss} [%thread] %-5level %logger{36} - %msg%n'
+  file:
+    name: logs/seckill-gateway.log
+    max-size: 10MB
+    max-history: 30
