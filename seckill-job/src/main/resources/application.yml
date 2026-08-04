@@ -1,0 +1,50 @@
+spring:
+  application:
+    name: seckill-job
+  cloud:
+    nacos:
+      discovery:
+        server-addr: 127.0.0.1:8848
+        namespace: seckill
+      config:
+        server-addr: 127.0.0.1:8848
+        namespace: seckill
+  datasource:
+    url: jdbc:mysql://127.0.0.1:3306/seckill_db?useSSL=false&serverTimezone=UTC&characterEncoding=UTF-8
+    username: root
+    password: root
+    driver-class-name: com.mysql.cj.jdbc.Driver
+  redis:
+    host: 127.0.0.1
+    port: 6379
+    timeout: 2000
+  kafka:
+    bootstrap-servers: 127.0.0.1:9092
+    producer:
+      acks: all
+      retries: 3
+
+xxl:
+  job:
+    admin:
+      addresses: http://127.0.0.1:8080/xxl-job-admin
+    executor:
+      appname: seckill-job-executor
+      ip: 127.0.0.1
+      port: 9999
+      logpath: logs/xxl-job
+      logretentiondays: 30
+    accessToken: default_token
+
+server:
+  port: 8084
+  servlet:
+    context-path: /
+
+logging:
+  level:
+    root: INFO
+    com.seckill: DEBUG
+    com.xxl.job: INFO
+  file:
+    name: logs/seckill-job.log
