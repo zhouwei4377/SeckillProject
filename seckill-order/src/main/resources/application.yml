@@ -1,0 +1,64 @@
+spring:
+  application:
+    name: seckill-order
+  cloud:
+    nacos:
+      discovery:
+        server-addr: 127.0.0.1:8848
+        namespace: seckill
+      config:
+        server-addr: 127.0.0.1:8848
+        namespace: seckill
+  datasource:
+    url: jdbc:mysql://127.0.0.1:3306/seckill_db?useSSL=false&serverTimezone=UTC&characterEncoding=UTF-8
+    username: root
+    password: root
+    driver-class-name: com.mysql.cj.jdbc.Driver
+    hikari:
+      maximum-pool-size: 30
+      minimum-idle: 10
+      connection-timeout: 30000
+      idle-timeout: 600000
+      max-lifetime: 1800000
+  redis:
+    host: 127.0.0.1
+    port: 6379
+    timeout: 2000
+    jedis:
+      pool:
+        max-active: 100
+        max-idle: 50
+        min-idle: 10
+        max-wait: -1ms
+  kafka:
+    bootstrap-servers: 127.0.0.1:9092
+    producer:
+      acks: all
+      retries: 3
+      batch-size: 16384
+      linger-ms: 10
+    consumer:
+      group-id: seckill-order-group
+      auto-offset-reset: earliest
+      enable-auto-commit: true
+
+mybatis-plus:
+  mapper-locations: classpath*:mapper/**/*.xml
+  type-aliases-package: com.seckill.order.entity
+  global-config:
+    db-config:
+      id-type: auto
+
+server:
+  port: 8082
+  servlet:
+    context-path: /
+
+logging:
+  level:
+    root: INFO
+    com.seckill: DEBUG
+  pattern:
+    console: '%d{yyyy-MM-dd HH:mm:ss} [%thread] %-5level %logger{36} - %msg%n'
+  file:
+    name: logs/seckill-order.log
