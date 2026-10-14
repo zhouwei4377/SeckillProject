@@ -8,6 +8,7 @@ import com.seckill.product.entity.SeckillProduct;
 import com.seckill.product.entity.StockChangeLog;
 import com.seckill.product.mapper.SeckillProductMapper;
 import com.seckill.product.mapper.StockChangeLogMapper;
+import com.seckill.product.redis.RedisLuaService;
 import com.seckill.product.service.SeckillProductService;
 import lombok.extern.slf4j.Slf4j;
 import org.redisson.api.RLock;
@@ -29,19 +30,22 @@ import java.util.stream.Collectors;
 @Slf4j
 @Service
 public class SeckillProductServiceImpl implements SeckillProductService {
-    
+
     @Resource
     private SeckillProductMapper seckillProductMapper;
-    
+
     @Resource
     private StockChangeLogMapper stockChangeLogMapper;
-    
+
     @Resource
     private RedisTemplate<String, Object> redisTemplate;
-    
+
     @Resource
     private RedissonClient redissonClient;
-    
+
+    @Resource
+    private RedisLuaService redisLuaService;
+
     @Override
     public List<SeckillProductDTO> getAllSeckillProducts() {
         // 先从缓存获取
@@ -49,13 +53,13 @@ public class SeckillProductServiceImpl implements SeckillProductService {
         if (cachedData != null) {
             return JsonUtil.parseArray(cachedData.toString(), SeckillProductDTO.class);
         }
-        
+
         // 从数据库获取
         List<SeckillProduct> products = seckillProductMapper.selectAllSeckillProducts();
         List<SeckillProductDTO> dtoList = products.stream()
             .map(this::convertToDTO)
             .collect(Collectors.toList());
-        
+
         // 缓存结果 (24小时)
         redisTemplate.opsForValue().set(
             "seckill:product:list",
@@ -63,28 +67,28 @@ public class SeckillProductServiceImpl implements SeckillProductService {
             SeckillConstants.CACHE_EXPIRE_HOURS,
             TimeUnit.HOURS
         );
-        
+
         return dtoList;
     }
-    
+
     @Override
     public SeckillProductDTO getSeckillProductDetail(Long productId) {
         String cacheKey = SeckillConstants.SECKILL_PRODUCT_KEY + productId;
-        
+
         // 从缓存获取
         Object cachedData = redisTemplate.opsForValue().get(cacheKey);
         if (cachedData != null) {
             return JsonUtil.parseObject(cachedData.toString(), SeckillProductDTO.class);
         }
-        
+
         // 从数据库获取
         SeckillProduct product = seckillProductMapper.selectById(productId);
         if (product == null) {
             throw SeckillException.invalidParameter("商品不存在");
         }
-        
+
         SeckillProductDTO dto = convertToDTO(product);
-        
+
         // 缓存商品信息
         redisTemplate.opsForValue().set(
             cacheKey,
@@ -92,61 +96,71 @@ public class SeckillProductServiceImpl implements SeckillProductService {
             SeckillConstants.CACHE_EXPIRE_HOURS,
             TimeUnit.HOURS
         );
-        
+
         return dto;
     }
-    
+
     @Override
     @Transactional(rollbackFor = Exception.class)
     public boolean decreaseStock(Long productId, Integer quantity, Long orderId) {
         if (quantity <= 0) {
             throw SeckillException.invalidParameter("数量必须大于0");
         }
-        
+
         try {
-            // 第一步：Redis快速路径 (原子操作)
+            // 第一步：Redis快速路径 (原子Lua脚本)
             String stockKey = SeckillConstants.PRODUCT_STOCK_KEY + productId;
-            Long remainStock = redisTemplate.opsForValue().decrement(stockKey, quantity);
-            
-            if (remainStock < 0) {
-                // Redis库存不足，回滚
-                redisTemplate.opsForValue().increment(stockKey, quantity);
+            Long luaRes = redisLuaService.decr(stockKey, quantity);
+
+            if (luaRes == null) {
+                throw SeckillException.systemError("库存服务异常");
+            }
+
+            if (luaRes == -2L) {
+                // stock key missing
                 throw SeckillException.stockInsufficient();
             }
-            
+
+            if (luaRes < 0) {
+                // Redis库存不足
+                throw SeckillException.stockInsufficient();
+            }
+
             // 第二步：库存预警检查
             SeckillProduct product = seckillProductMapper.selectById(productId);
             if (product == null) {
+                // 回滚Redis
+                redisLuaService.incr(stockKey, quantity);
                 throw SeckillException.invalidParameter("商品不存在");
             }
-            
+
             int warningStock = (int) (product.getInitialStock() * 
                 SeckillConstants.STOCK_WARNING_PERCENTAGE / 100);
-            if (remainStock < warningStock) {
-                log.warn("商品库存预警：productId={}, remainStock={}", productId, remainStock);
+            if (luaRes < warningStock) {
+                log.warn("商品库存预警：productId={}, remainStock={}", productId, luaRes);
             }
-            
+
             // 第三步：数据库CAS更新 (二次验证)
             int version = product.getStockVersion();
             int updateCount = seckillProductMapper.decreaseStockByVersion(
                 productId, quantity, version
             );
-            
+
             if (updateCount == 0) {
-                // 数据库更新失败（版本号不匹配或库存不足）
-                redisTemplate.opsForValue().increment(stockKey, quantity);
+                // 数据库更新失败（版本号不匹配或库存不足），回滚Redis
+                redisLuaService.incr(stockKey, quantity);
                 throw SeckillException.stockInsufficient();
             }
-            
+
             // 第四步：记录库存变更日志
             recordStockChange(productId, quantity, product.getCurrentStock(), 
                 product.getCurrentStock() - quantity, 1, orderId);
-            
+
             log.info("库存扣减成功：productId={}, quantity={}, orderId={}", 
                 productId, quantity, orderId);
-            
+
             return true;
-            
+
         } catch (SeckillException e) {
             throw e;
         } catch (Exception e) {
@@ -154,40 +168,40 @@ public class SeckillProductServiceImpl implements SeckillProductService {
             throw SeckillException.systemError("库存扣减失败，请稍后重试");
         }
     }
-    
+
     @Override
     @Transactional(rollbackFor = Exception.class)
     public boolean restoreStock(Long productId, Integer quantity) {
         try {
             // 恢复Redis库存
             String stockKey = SeckillConstants.PRODUCT_STOCK_KEY + productId;
-            redisTemplate.opsForValue().increment(stockKey, quantity);
-            
+            redisLuaService.incr(stockKey, quantity);
+
             // 恢复数据库库存
             int updateCount = seckillProductMapper.increaseStock(productId, quantity);
-            
+
             if (updateCount > 0) {
                 SeckillProduct product = seckillProductMapper.selectById(productId);
                 recordStockChange(productId, quantity, product.getCurrentStock() - quantity,
                     product.getCurrentStock(), 2, null);
-                
+
                 log.info("库存恢复成功：productId={}, quantity={}", productId, quantity);
                 return true;
             }
-            
+
             return false;
         } catch (Exception e) {
             log.error("库存恢复异常：productId={}, quantity={}", productId, quantity, e);
             throw SeckillException.systemError("库存恢复失败");
         }
     }
-    
+
     @Override
     public void warmUpCache() {
         log.info("开始预热缓存...");
         try {
             List<SeckillProduct> products = seckillProductMapper.selectAllSeckillProducts();
-            
+
             for (SeckillProduct product : products) {
                 // 预热商品信息缓存
                 String productKey = SeckillConstants.SECKILL_PRODUCT_KEY + product.getId();
@@ -197,7 +211,7 @@ public class SeckillProductServiceImpl implements SeckillProductService {
                     SeckillConstants.CACHE_EXPIRE_HOURS,
                     TimeUnit.HOURS
                 );
-                
+
                 // 预热库存缓存
                 String stockKey = SeckillConstants.PRODUCT_STOCK_KEY + product.getId();
                 redisTemplate.opsForValue().set(
@@ -207,18 +221,18 @@ public class SeckillProductServiceImpl implements SeckillProductService {
                     TimeUnit.HOURS
                 );
             }
-            
+
             log.info("缓存预热完成，共预热 {} 个商品", products.size());
         } catch (Exception e) {
             log.error("缓存预热失败", e);
         }
     }
-    
+
     @Override
     public void refreshSeckillStatus() {
         // TODO: 定时刷新秒杀商品的状态
     }
-    
+
     /**
      * 转换为DTO
      */
@@ -226,10 +240,10 @@ public class SeckillProductServiceImpl implements SeckillProductService {
         if (product == null) {
             return null;
         }
-        
+
         LocalDateTime now = LocalDateTime.now();
         int status = product.getStatus();
-        
+
         // 检查秒杀状态
         if (now.isBefore(product.getStartTime())) {
             status = SeckillConstants.SECKILL_STATUS_NOT_START;
@@ -240,17 +254,17 @@ public class SeckillProductServiceImpl implements SeckillProductService {
         } else {
             status = SeckillConstants.SECKILL_STATUS_IN_PROGRESS;
         }
-        
+
         // 计算折扣率
         double discountRate = product.getSeckillPrice().doubleValue() / 
             product.getOriginalPrice().doubleValue() * 100;
-        
+
         // 计算剩余时间
         int remainingTime = 0;
         if (status == SeckillConstants.SECKILL_STATUS_IN_PROGRESS) {
             remainingTime = (int) java.time.temporal.ChronoUnit.SECONDS.between(now, product.getEndTime());
         }
-        
+
         return SeckillProductDTO.builder()
             .id(product.getId())
             .name(product.getName())
@@ -269,7 +283,7 @@ public class SeckillProductServiceImpl implements SeckillProductService {
             .isSoldOut(product.getCurrentStock() <= 0)
             .build();
     }
-    
+
     /**
      * 记录库存变更日志
      */
@@ -287,7 +301,7 @@ public class SeckillProductServiceImpl implements SeckillProductService {
                 .operator("SYSTEM")
                 .createTime(LocalDateTime.now())
                 .build();
-            
+
             stockChangeLogMapper.insert(log);
         } catch (Exception e) {
             logger.warn("记录库存变更日志失败", e);
