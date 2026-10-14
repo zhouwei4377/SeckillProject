@@ -35,9 +35,26 @@ public class InternalProductController {
         }
     }
 
+    @PostMapping("/{productId}/restoreStock")
+    public ResponseEntity<Boolean> restoreStock(@PathVariable("productId") Long productId,
+                                                @RequestBody RestoreStockRequest req) {
+        try {
+            boolean ok = seckillProductService.restoreStock(productId, req.getQuantity());
+            return ResponseEntity.ok(ok);
+        } catch (Exception e) {
+            log.warn("内部恢复库存异常 productId={}, quantity={}, err={}", productId, req.getQuantity(), e.getMessage());
+            return ResponseEntity.status(500).body(false);
+        }
+    }
+
     @Data
     public static class DecreaseStockRequest {
         private Integer quantity;
         private Long orderId;
+    }
+
+    @Data
+    public static class RestoreStockRequest {
+        private Integer quantity;
     }
 }
