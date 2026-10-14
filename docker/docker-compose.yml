@@ -1,0 +1,70 @@
+version: '3.8'
+
+services:
+  seckill_mysql:
+    image: mysql:8.0
+    container_name: seckill_mysql
+    environment:
+      MYSQL_ROOT_PASSWORD: rootpass
+      MYSQL_DATABASE: seckill
+      MYSQL_USER: seckill
+      MYSQL_PASSWORD: seckill
+    ports:
+      - "3306:3306"
+    volumes:
+      - ./docker/mysql:/var/lib/mysql
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  seckill_redis:
+    image: bitnami/redis:6
+    container_name: seckill_redis
+    environment:
+      - ALLOW_EMPTY_PASSWORD=yes
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  seckill_zookeeper:
+    image: bitnami/zookeeper:3
+    container_name: seckill_zookeeper
+    environment:
+      - ALLOW_ANONYMOUS_LOGIN=yes
+    ports:
+      - "2181:2181"
+    healthcheck:
+      test: ["CMD", "zkServer.sh", "status"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  seckill_kafka:
+    image: bitnami/kafka:3.2.0
+    container_name: seckill_kafka
+    environment:
+      - KAFKA_BROKER_ID=1
+      - KAFKA_ZOOKEEPER_CONNECT=seckill_zookeeper:2181
+      - KAFKA_LISTENERS=PLAINTEXT://:9092
+      - KAFKA_ADVERTISED_LISTENERS=PLAINTEXT://localhost:9092
+      - KAFKA_CREATE_TOPICS=seckill.order.create:1:1,seckill.order.cancel:1:1,seckill.payment.success:1:1,seckill.stock.update:1:1
+      - ALLOW_PLAINTEXT_LISTENER=yes
+    ports:
+      - "9092:9092"
+    depends_on:
+      - seckill_zookeeper
+    healthcheck:
+      test: ["CMD", "bash", "-c", "ss -ltn | grep -q ':9092' || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+networks:
+  default:
+    name: seckill_local_net
