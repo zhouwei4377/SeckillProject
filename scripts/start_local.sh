@@ -12,6 +12,7 @@ until docker exec seckill_mysql mysqladmin ping -uroot -prootpass --silent >/dev
 done
 echo "\nMySQL is up"
 
+# Initialize database and user (if not exists) and load schema
 echo "Initializing database and user..."
 docker exec -i seckill_mysql mysql -uroot -prootpass <<'SQL'
 CREATE DATABASE IF NOT EXISTS seckill DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
@@ -19,6 +20,15 @@ CREATE USER IF NOT EXISTS 'seckill'@'%' IDENTIFIED BY 'seckill';
 GRANT ALL PRIVILEGES ON seckill.* TO 'seckill'@'%';
 FLUSH PRIVILEGES;
 SQL
+
+# copy init.sql into container and apply schema
+if docker cp "$ROOT_DIR/docker/mysql/init.sql" seckill_mysql:/init.sql >/dev/null 2>&1; then
+  echo "Applying DB schema..."
+  docker exec seckill_mysql bash -lc "mysql -uroot -prootpass seckill < /init.sql"
+else
+  echo "Warning: failed to copy init.sql to mysql container"
+fi
+
 
 echo "Waiting for Redis to be ready..."
 until docker exec seckill_redis redis-cli ping >/dev/null 2>&1; do
