@@ -1,5 +1,8 @@
 package com.seckill.order.service;
 
 public interface CompensationService {
-    void submitRestoreStockCompensation(Long orderId, Long productId, Integer quantity);
+
+    void createCompensation(Long orderId, Long productId, Integer quantity, String reason);
+
+    void retryPendingCompensations();
 }
