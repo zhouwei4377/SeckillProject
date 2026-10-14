@@ -2,19 +2,16 @@ package com.seckill.order.kafka;
 
 import com.alibaba.fastjson2.JSON;
 import com.seckill.common.constant.SeckillConstants;
-import com.seckill.order.entity.OutboxEvent;
 import com.seckill.order.entity.SeckillOrder;
-import com.seckill.order.mapper.OutboxEventMapper;
 import com.seckill.order.mapper.SeckillOrderMapper;
+import com.seckill.order.service.OrderEventDedupService;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.kafka.annotation.KafkaListener;
-import org.springframework.kafka.core.KafkaTemplate;
 import org.springframework.stereotype.Component;
 import org.springframework.transaction.annotation.Transactional;
 
 import javax.annotation.Resource;
 import java.time.LocalDateTime;
-import java.util.Map;
 
 @Slf4j
 @Component
@@ -24,10 +21,7 @@ public class OrderEventConsumer {
     private SeckillOrderMapper seckillOrderMapper;
 
     @Resource
-    private OutboxEventMapper outboxEventMapper;
-
-    @Resource
-    private KafkaTemplate<String, String> kafkaTemplate;
+    private OrderEventDedupService orderEventDedupService;
 
     @KafkaListener(topics = SeckillConstants.TOPIC_ORDER_CREATE, groupId = SeckillConstants.GROUP_ORDER_SERVICE)
     @Transactional(rollbackFor = Exception.class)
@@ -40,27 +34,24 @@ public class OrderEventConsumer {
                 return;
             }
 
-            Long orderId = order.getId();
-            String dedupKey = "order:create:processed:" + orderId;
-            if (isProcessed(dedupKey)) {
-                log.info("订单创建事件已处理，跳过 orderId={}", orderId);
+            String dedupKey = "order:create:" + order.getId();
+            if (!orderEventDedupService.tryAcquire(SeckillConstants.TOPIC_ORDER_CREATE, dedupKey)) {
+                log.info("订单创建事件已处理，跳过 orderId={}", order.getId());
                 return;
             }
 
-            SeckillOrder dbOrder = seckillOrderMapper.selectById(orderId);
+            SeckillOrder dbOrder = seckillOrderMapper.selectById(order.getId());
             if (dbOrder == null) {
-                log.warn("订单不存在，orderId={}", orderId);
+                log.warn("订单不存在，orderId={}", order.getId());
                 return;
             }
 
             if (dbOrder.getStatus() == null || dbOrder.getStatus() != SeckillConstants.ORDER_STATUS_PENDING) {
-                log.info("订单状态不允许处理，orderId={}, status={}", orderId, dbOrder.getStatus());
-                markProcessed(dedupKey);
+                log.info("订单状态不允许处理，orderId={}, status={}", order.getId(), dbOrder.getStatus());
                 return;
             }
 
-            markProcessed(dedupKey);
-            log.info("订单创建事件已处理 orderId={}", orderId);
+            log.info("订单创建事件处理完成 orderId={}", order.getId());
         } catch (Exception e) {
             log.error("处理订单创建事件异常", e);
             throw e;
@@ -78,42 +69,23 @@ public class OrderEventConsumer {
                 return;
             }
 
-            Long orderId = order.getId();
-            String dedupKey = "order:cancel:processed:" + orderId;
-            if (isProcessed(dedupKey)) {
-                log.info("订单取消事件已处理，跳过 orderId={}", orderId);
+            String dedupKey = "order:cancel:" + order.getId();
+            if (!orderEventDedupService.tryAcquire(SeckillConstants.TOPIC_ORDER_CANCEL, dedupKey)) {
+                log.info("订单取消事件已处理，跳过 orderId={}", order.getId());
                 return;
             }
 
-            SeckillOrder dbOrder = seckillOrderMapper.selectById(orderId);
+            SeckillOrder dbOrder = seckillOrderMapper.selectById(order.getId());
             if (dbOrder != null && dbOrder.getStatus() != SeckillConstants.ORDER_STATUS_CANCELLED) {
                 dbOrder.setStatus(SeckillConstants.ORDER_STATUS_CANCELLED);
                 dbOrder.setCancelTime(LocalDateTime.now());
                 seckillOrderMapper.updateById(dbOrder);
             }
 
-            markProcessed(dedupKey);
-            log.info("订单取消事件处理完成 orderId={}", orderId);
+            log.info("订单取消事件处理完成 orderId={}", order.getId());
         } catch (Exception e) {
             log.error("处理订单取消事件异常", e);
             throw e;
         }
-    }
-
-    private boolean isProcessed(String dedupKey) {
-        return outboxEventMapper.selectList(null).stream()
-                .anyMatch(event -> event.getEventType() != null && event.getEventType().contains(dedupKey));
-    }
-
-    private void markProcessed(String dedupKey) {
-        OutboxEvent event = new OutboxEvent();
-        event.setAggregateType("kafka-dedup");
-        event.setAggregateId(dedupKey);
-        event.setEventType("processed");
-        event.setPayload("{}");
-        event.setStatus(1);
-        event.setCreatedAt(LocalDateTime.now());
-        event.setUpdatedAt(LocalDateTime.now());
-        outboxEventMapper.insert(event);
     }
 }
